@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Настройки Claude Code: локальные разрешения и MCP с секретами
+.claude/
+
+# Локальные данные пользователя — в репозиторий не попадают
+config.json
+add_tenders.log
+history.jsonl
+backups/
+*.xlsx
+*.xlsx.tmp
+~$*.xlsx
