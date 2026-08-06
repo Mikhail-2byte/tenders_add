@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-«Тендеры» — локальная программа с окном (tkinter) поверх ядра add_tenders.py.
+«Тендеры» — локальная программа с окном (tkinter) поверх ядра tenders/core.py.
 
 Вкладка «Добавление»: читает буфер обмена (список из 1С), предпросмотр или
 боевое добавление в заметки.xlsx; ход работы виден в текстовом поле.
 Вкладка «Статистика»: сводка, график и таблица «сколько тендеров добавлено
 по дням» на основе history.jsonl.
 
-Запуск: «Тендеры.bat» или py -3.12 tender_app.py [--file ПУТЬ]
+Запуск: «Тендеры.bat» или py -3.12 -m tenders [--file ПУТЬ]
 """
 
 import argparse
@@ -19,11 +19,11 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from tkinter.scrolledtext import ScrolledText
 
-import add_tenders as at
+from . import core as at
 
 CHART_DAYS = 14      # сколько последних дней показывать на графике
 BAR_COLOR = "#4A90D9"
-ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Тендеры.ico")
+ICON_PATH = os.path.join(at.ROOT_DIR, "assets", "Тендеры.ico")
 
 
 class TenderApp:
@@ -54,6 +54,18 @@ class TenderApp:
         self._build_stats_tab()
         self.refresh_stats()
         self._poll_queue()
+        root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_close(self):
+        """Во время записи окно не закрываем: обрыв посреди сохранения оставит
+        недописанный файл .tmp, а работа пропадёт."""
+        if self.worker is not None and self.worker.is_alive():
+            messagebox.showwarning(
+                "Идёт запись",
+                "Файл сейчас сохраняется — подождите пару секунд.\n"
+                "Окно закроется, когда работа закончится.")
+            return
+        self.root.destroy()
 
     # ---------------- вкладка «Добавление» ----------------
 
@@ -112,8 +124,10 @@ class TenderApp:
             text = ""
         self._clear_output()
         self._set_busy(True, "Предпросмотр..." if dry_run else "Добавление...")
+        # Поток НЕ daemon: если окно всё же закроют, запись успеет завершиться.
+        # daemon-поток Python убивает мгновенно — прямо посреди сохранения файла.
         self.worker = threading.Thread(target=self._worker_run,
-                                       args=(text, dry_run), daemon=True)
+                                       args=(text, dry_run))
         self.worker.start()
 
     def _worker_run(self, text, dry_run):

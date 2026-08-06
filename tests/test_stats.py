@@ -2,7 +2,7 @@
 """Тесты истории/статистики. Запуск: py -3.12 -m pytest test_stats.py"""
 import datetime
 
-import add_tenders as at
+from tenders import core as at
 
 
 def test_counts_by_day_groups_and_sums():

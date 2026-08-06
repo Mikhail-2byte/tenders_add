@@ -9,9 +9,8 @@ venv/
 .claude/
 
 # Локальные данные пользователя — в репозиторий не попадают
-config.json
-add_tenders.log
-history.jsonl
+# (настройки, журнал и история запусков лежат в data/)
+data/
 backups/
 *.xlsx
 *.xlsx.tmp
