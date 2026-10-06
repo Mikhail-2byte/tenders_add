@@ -20,6 +20,7 @@ from tkinter import ttk, messagebox, filedialog
 from tkinter.scrolledtext import ScrolledText
 
 from . import core as at
+from . import b2b_links
 
 CHART_DAYS = 14      # сколько последних дней показывать на графике
 BAR_COLOR = "#4A90D9"
@@ -84,6 +85,14 @@ class TenderApp:
         self.btn_add = ttk.Button(btns, text="Добавить тендеры",
                                   command=lambda: self.run_sync(dry_run=False))
         self.btn_add.pack(side="left", padx=8)
+        # Чекбокс: автоматически проставлять ссылки B2B после добавления
+        self.var_fetch_b2b = tk.BooleanVar(value=False)
+        self.chk_b2b = ttk.Checkbutton(btns, text="Ссылки B2B", variable=self.var_fetch_b2b)
+        self.chk_b2b.pack(side="left", padx=8)
+        # Отдельный режим: проставить ссылки B2B-Center по номеру тендера.
+        self.btn_b2b = ttk.Button(btns, text="Ссылки B2B (все)",
+                                  command=self.run_b2b_links)
+        self.btn_b2b.pack(side="left")
 
         file_row = ttk.Frame(self.tab_add, padding=(10, 0, 10, 4))
         file_row.pack(fill="x")
@@ -127,14 +136,39 @@ class TenderApp:
         # Поток НЕ daemon: если окно всё же закроют, запись успеет завершиться.
         # daemon-поток Python убивает мгновенно — прямо посреди сохранения файла.
         self.worker = threading.Thread(target=self._worker_run,
-                                       args=(text, dry_run))
+                                       args=(text, dry_run, self.var_fetch_b2b.get()))
         self.worker.start()
 
-    def _worker_run(self, text, dry_run):
+    def _worker_run(self, text, dry_run, fetch_b2b):
         def say(*parts):
             self.msg_queue.put(("line", " ".join(str(p) for p in parts)))
         try:
-            result = at.sync(self.xlsx_path, text, dry_run=dry_run, say=say)
+            result = at.sync(self.xlsx_path, text, dry_run=dry_run, fetch_b2b_links=fetch_b2b, say=say)
+            self.msg_queue.put(("done", result))
+        except at.SyncError as ex:
+            self.msg_queue.put(("warn", str(ex)))
+        except Exception:
+            import traceback
+            self.msg_queue.put(("error", traceback.format_exc()))
+
+    def run_b2b_links(self):
+        """Проставить ссылки B2B-Center в пустые «Ссылка» у строк с ЭТП = B2B.
+
+        Идёт в интернет с паузой ~1.5 с на строку, поэтому по многим строкам
+        может занять минуты — ход виден в окне вывода.
+        """
+        if self.worker is not None and self.worker.is_alive():
+            return
+        self._clear_output()
+        self._set_busy(True, "Поиск ссылок B2B...")
+        self.worker = threading.Thread(target=self._worker_b2b)
+        self.worker.start()
+
+    def _worker_b2b(self):
+        def say(*parts):
+            self.msg_queue.put(("line", " ".join(str(p) for p in parts)))
+        try:
+            result = b2b_links.fill_b2b_links(self.xlsx_path, dry_run=False, say=say)
             self.msg_queue.put(("done", result))
         except at.SyncError as ex:
             self.msg_queue.put(("warn", str(ex)))
@@ -149,7 +183,12 @@ class TenderApp:
                 if kind == "line":
                     self._append(payload)
                 elif kind == "done":
-                    if payload.get("dry_run"):
+                    if "filled" in payload:          # итог режима «Ссылки B2B»
+                        self._set_busy(
+                            False, "Готово: ссылок %d (не найдено %d, неоднозначно %d)"
+                            % (payload.get("filled", 0), len(payload.get("not_found", [])),
+                               len(payload.get("ambiguous", []))))
+                    elif payload.get("dry_run"):
                         self._set_busy(False, "Предпросмотр готов")
                     else:
                         self._set_busy(False, "Готово: добавлено %d"
@@ -174,6 +213,12 @@ class TenderApp:
         state = "disabled" if busy else "normal"
         self.btn_preview.configure(state=state)
         self.btn_add.configure(state=state)
+        self.btn_b2b.configure(state=state)
+        # Чекбокс B2B тоже отключаем во время работы
+        try:
+            self.chk_b2b.configure(state=state)
+        except AttributeError:
+            pass
         self.status.set(status_text)
 
     def _clear_output(self):

@@ -77,7 +77,7 @@ CONFIG_PATH = os.path.join(DATA_DIR, "config.json")
 DEFAULT_XLSX = os.path.join(os.path.expanduser("~"), "Desktop", "заметки.xlsx")
 
 # Возможные значения статуса в выгрузке 1С — "якорь":
-# поле сразу после статуса = ЭТП, следующее = описание.
+# статус+1 = наименование, статус+2 = ЭТП, статус+3 = комментарий.
 # К списку статусов Excel (лист «Справочники») отношения не имеет.
 STATUSES_1C = {"в работе", "подался", "отказ", "проиграли",
                "победа", "интересный", "интересные", "на согласовании"}
@@ -270,7 +270,7 @@ def parse_row(line):
 
     deadline_raw = fields[2] if len(fields) > 2 else ""
 
-    etp, name = "", ""
+    name, etp, comment = "", "", ""
     status_idx = None
     for i, f in enumerate(fields):
         if f.lower() in STATUSES_1C:
@@ -278,18 +278,23 @@ def parse_row(line):
             break
     if status_idx is not None:
         if status_idx + 1 < len(fields):
-            etp = fields[status_idx + 1]
+            name = fields[status_idx + 1]
         if status_idx + 2 < len(fields):
-            name = fields[status_idx + 2]
+            etp = fields[status_idx + 2]
+        if status_idx + 3 < len(fields):
+            comment = fields[status_idx + 3]
     else:
         if len(fields) > 10:
-            etp = fields[10]
+            name = fields[10]
         if len(fields) > 11:
-            name = fields[11]
+            etp = fields[11]
+        if len(fields) > 12:
+            comment = fields[12]
 
-    # name — описание тендера из 1С, едет в столбец B "Наименование тендера".
+    # name — наименование тендера из 1С, едет в столбец B "Наименование тендера".
     return {"number": number, "customer": customer, "etp": etp,
-            "deadline": parse_deadline(deadline_raw), "name": name}
+            "deadline": parse_deadline(deadline_raw), "name": name,
+            "comment": comment}
 
 
 def check_layout(ws):
@@ -565,11 +570,14 @@ def counts_by_day(records):
 
 # ------------------------- ОСНОВНАЯ ЛОГИКА -------------------------
 
-def sync(xlsx_path, text, dry_run=False, say=print):
+def sync(xlsx_path, text, dry_run=False, fetch_b2b_links=False, say=print):
     """Синхронизация: текст буфера 1С -> xlsx + папки.
 
     Возвращает dict с итогами; ожидаемые проблемы поднимает как SyncError
     (текст готов для показа пользователю). say(*args) — вывод хода работы.
+
+    Если fetch_b2b_links=True, после сохранения автоматически проставит ссылки
+    на B2B-Center для новых тендеров с ЭТП = b2b-center и пустой «Ссылка».
     """
     if not os.path.exists(xlsx_path):
         raise SyncError("Не найден файл " + xlsx_path)
@@ -722,6 +730,8 @@ def sync(xlsx_path, text, dry_run=False, say=print):
             ws.cell(r, COL_NAME, e["name"])
             ws.cell(r, COL_NUMBER, e["number"])
             ws.cell(r, COL_ETP, e["etp"])
+            if e["comment"]:
+                ws.cell(r, COL_COMMENT, e["comment"])
             ws.cell(r, COL_STATUS, DEFAULT_STATUS)
             ws.cell(r, COL_ACTION, mark)
             if e["deadline"] not in (None, ""):
@@ -799,6 +809,18 @@ def sync(xlsx_path, text, dry_run=False, say=print):
     say("Резервная копия:", backup)
     say("Готово. Файл сохранён:", xlsx_path)
 
+    # Автоматически проставить ссылки B2B-Center для новых тендеров
+    if fetch_b2b_links and new_entries:
+        from . import b2b_links
+        say("Поиск ссылок B2B-Center...")
+        try:
+            b2b_result = b2b_links.fill_b2b_links(xlsx_path, dry_run=False, say=say)
+            say("B2B: проставлено ссылок %d" % b2b_result.get("filled", 0))
+        except b2b_links.Antibot as ex:
+            say("B2B: остановлено антиботом — %s" % ex)
+        except Exception as ex:
+            say("B2B: ошибка — %s" % ex)
+
     log = ["[%s] %s" % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), xlsx_path),
            "добавлено: %d, уже было: %d" % (len(new_entries), existed)]
     if new_entries:
@@ -820,12 +842,15 @@ def main():
         description="Добавление тендеров из буфера обмена (1С) в заметки.xlsx")
     ap.add_argument("--dry-run", action="store_true",
                     help="показать, что будет добавлено, без записи файла и создания папок")
+    ap.add_argument("--fetch-b2b-links", action="store_true",
+                    help="после добавления проставить ссылки B2B-Center для новых тендеров")
     ap.add_argument("--file", metavar="ПУТЬ",
                     help="путь к xlsx (по умолчанию — выбранный в окне программы)")
     args = ap.parse_args()
 
     try:
-        sync(args.file or load_xlsx_path(), read_clipboard(), dry_run=args.dry_run)
+        sync(args.file or load_xlsx_path(), read_clipboard(),
+             dry_run=args.dry_run, fetch_b2b_links=args.fetch_b2b_links)
     except SyncError as ex:
         print(ex)
 

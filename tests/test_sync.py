@@ -20,6 +20,7 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.hyperlink import Hyperlink
 from openpyxl.worksheet.table import Table
 
+from tenders import b2b_links
 from tenders import core as at
 
 
@@ -58,10 +59,12 @@ EXT_SAMPLE = (
 
 
 def line_1c(number, customer="ООО Ромашка", deadline="10.08.2026 12:30",
-            status="В работе", etp="Сбербанк-АСТ", name="наименование"):
-    """Строка выгрузки 1С: 12 полей через TAB, номер — поле 5, заказчик — поле 6."""
-    return "\t".join(["x", "Да", deadline, "x", number, customer,
-                      "x", "x", "x", status, etp, name])
+            status="В работе", name="наименование", etp="Сбербанк-АСТ",
+            comment="комментарий из 1С"):
+    """Строка выгрузки 1С: 13 полей через TAB, номер — поле 5, заказчик — поле 6."""
+    return "\t".join(["1", "01.08.2026", deadline, "10", number, customer,
+                      "Тендер 000000000025397 от 14.09.2026 11:54:11", "", "Нет",
+                      status, name, etp, comment])
 
 
 @pytest.fixture
@@ -182,7 +185,8 @@ def test_new_row_placed_by_sort_not_appended(env):
 
 def test_new_tender_fields_written(env):
     text = line_1c("999", customer="Новый заказчик", etp="roseltorg",
-                   name="Вал редуктора", deadline="10.08.2026 12:30")
+                   name="Вал редуктора", deadline="10.08.2026 12:30",
+                   comment="")
     at.sync(env["xlsx"], text, say=quiet)
 
     ws = load(env)
@@ -190,9 +194,37 @@ def test_new_tender_fields_written(env):
     assert ws.cell(r, at.COL_CUSTOMER).value == "Новый заказчик"
     assert ws.cell(r, at.COL_NAME).value == "Вал редуктора"
     assert ws.cell(r, at.COL_ETP).value == "roseltorg"
-    # «Ссылка» и «Комментарий» новым строкам не заполняются — их ведут руками.
+    # «Ссылка» новым строкам не заполняется — её ведут руками.
     assert ws.cell(r, at.COL_LINK).value is None
+    # Комментарий в выгрузке пуст — ячейку не трогаем.
     assert ws.cell(r, at.COL_COMMENT).value is None
+
+
+def test_new_row_comment_from_1c(env):
+    """Комментарий из выгрузки 1С попадает в столбец G новой строки."""
+    text = line_1c("999", comment="вал 877*1шт.до 12.00")
+    at.sync(env["xlsx"], text, say=quiet)
+
+    ws = load(env)
+    assert ws.cell(row_of(ws, "999"), at.COL_COMMENT).value == "вал 877*1шт.до 12.00"
+
+
+def test_sync_fetches_b2b_link_for_new_1c_row(env, monkeypatch):
+    """Новый формат 1С -> строка B2B -> ссылка в сохранённом XLSX."""
+    def lookup(_session, number):
+        return [{"id": number, "заголовок": "Тест", "url":
+                 "https://www.b2b-center.ru/market/test/tender-%s/" % number}]
+
+    monkeypatch.setattr(b2b_links, "lookup_tender", lookup)
+    text = line_1c("4621463", name="Дробильно-размольное&#x20;",
+                   etp="b2b-center", comment="Запчасти к дробилке")
+
+    at.sync(env["xlsx"], text, fetch_b2b_links=True, say=quiet)
+
+    ws = load(env)
+    cell = ws.cell(row_of(ws, "4621463"), at.COL_LINK)
+    assert cell.value == "Открыть"
+    assert cell.hyperlink.target.endswith("/tender-4621463/")
 
 
 def test_new_row_default_status(env):
