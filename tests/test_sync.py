@@ -424,6 +424,86 @@ def test_existing_folder_with_suffix_reused(env):
     assert os.path.isdir(os.path.join(existing, at.SUBFOLDER))
 
 
+def test_request_template_copied_for_new_tender(env):
+    """Для нового тендера создаётся готовый бланк Запрос_<номер>.xlsx."""
+    at.sync(env["xlsx"], line_1c("4625019"), say=quiet)
+
+    template_file = os.path.join(env["work"], "4625019", "Запрос_4625019.xlsx")
+    assert os.path.isfile(template_file), "Файл запроса не создан"
+
+    wb = openpyxl.load_workbook(template_file)
+    assert wb.template is False
+    assert wb.active["A2"].value == "Коммерческое предложение"
+    assert wb.active["B5"].value == "产品名称\nНаименование"
+    assert wb.active["M7"].value == "=L7*K7"
+    assert wb.active["S7"].value == '=IFERROR(L7/N7,"")'
+    wb.close()
+
+
+def test_request_template_not_copied_on_dry_run(env):
+    """В режиме предпросмотра файл запроса не создаётся."""
+    at.sync(env["xlsx"], line_1c("4625019"), dry_run=True, say=quiet)
+
+    template_file = os.path.join(env["work"], "4625019", "Запрос_4625019.xlsx")
+    assert not os.path.exists(template_file), "В dry-run файл не должен создаваться"
+
+
+def test_request_template_not_overwritten(env):
+    """Если файл запроса уже существует, он не перезаписывается."""
+    folder = os.path.join(env["work"], "4625019")
+    os.makedirs(folder)
+    template_file = os.path.join(env["work"], "4625019", "Запрос_4625019.xlsx")
+    wb = openpyxl.Workbook()
+    wb.active["A1"] = "МОЙ ФАЙЛ"
+    wb.save(template_file)
+    wb.close()
+    mtime_before = os.path.getmtime(template_file)
+
+    # Тендер новый для таблицы, но его рабочая папка и файл уже существуют.
+    at.sync(env["xlsx"], line_1c("4625019"), say=quiet)
+
+    # Файл не должен измениться
+    mtime_after = os.path.getmtime(template_file)
+    assert mtime_after == mtime_before, "Существующий файл не должен перезаписываться"
+
+    wb2 = openpyxl.load_workbook(template_file)
+    assert wb2.active["A1"].value == "МОЙ ФАЙЛ"
+    wb2.close()
+
+
+def test_request_template_not_added_for_existing_tender(env):
+    """Шаблон создаётся только для нового тендера, а не при каждой синхронизации."""
+    at.sync(env["xlsx"], line_1c("111"), say=quiet)
+
+    template_file = os.path.join(env["work"], "111", "Запрос_111.xlsx")
+    assert not os.path.exists(template_file)
+
+
+def test_failed_request_template_save_leaves_no_partial_file(env, monkeypatch):
+    """После ошибки сохранения не остаётся файл, который следующий запуск пропустит."""
+    folder = os.path.join(env["work"], "4625019")
+    os.makedirs(folder)
+
+    class BrokenWorkbook:
+        def save(self, path):
+            with open(path, "wb") as file:
+                file.write(b"partial")
+            raise OSError("нет доступа")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(at, "build_request_workbook", lambda: BrokenWorkbook())
+    messages = []
+
+    result = at.copy_request_template("4625019", folder, lambda *parts: messages.append(parts))
+
+    assert result is None
+    assert not os.path.exists(os.path.join(folder, "Запрос_4625019.xlsx"))
+    assert not [name for name in os.listdir(folder) if name.endswith(".tmp")]
+    assert any("не удалось создать" in parts[0] for parts in messages)
+
+
 # ------------------------- защита данных -------------------------
 
 def test_backup_created_and_no_tmp_left(env):
