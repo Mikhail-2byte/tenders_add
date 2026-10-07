@@ -21,6 +21,7 @@ from openpyxl.worksheet.hyperlink import Hyperlink
 from openpyxl.worksheet.table import Table
 
 from tenders import b2b_links
+from tenders import b2b_details
 from tenders import core as at
 
 
@@ -216,6 +217,11 @@ def test_sync_fetches_b2b_link_for_new_1c_row(env, monkeypatch):
                  "https://www.b2b-center.ru/market/test/tender-%s/" % number}]
 
     monkeypatch.setattr(b2b_links, "lookup_tender", lookup)
+    collected = []
+    monkeypatch.setattr(
+        b2b_details, "collect_b2b_details",
+        lambda _path, numbers, **_kwargs: collected.extend(numbers) or {
+            "processed": list(numbers), "txt_written": len(numbers)})
     text = line_1c("4621463", name="Дробильно-размольное&#x20;",
                    etp="b2b-center", comment="Запчасти к дробилке")
 
@@ -225,6 +231,7 @@ def test_sync_fetches_b2b_link_for_new_1c_row(env, monkeypatch):
     cell = ws.cell(row_of(ws, "4621463"), at.COL_LINK)
     assert cell.value == "Открыть"
     assert cell.hyperlink.target.endswith("/tender-4621463/")
+    assert collected == ["4621463"]
 
 
 def test_new_row_default_status(env):

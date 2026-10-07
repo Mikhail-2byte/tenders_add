@@ -132,8 +132,11 @@ def lookup_tender(session, number):
     return parse_results(payload, number)
 
 
-def fill_b2b_links(xlsx_path, dry_run=False, say=print):
+def fill_b2b_links(xlsx_path, dry_run=False, say=print, numbers=None):
     """Проставить ссылки B2B в пустые «Ссылка» у строк с ЭТП = B2B.
+
+    numbers — необязательный точный список номеров. Без него сохраняется прежний
+    режим обработки всех B2B-строк без ссылки.
 
     Возвращает dict-итог; ожидаемые проблемы поднимает как SyncError.
     """
@@ -163,6 +166,10 @@ def fill_b2b_links(xlsx_path, dry_run=False, say=print):
     ext = core.read_ext_lst(xlsx_path, sheet_index)
     last = core.last_data_row(ws)
 
+    wanted = None
+    if numbers is not None:
+        wanted = {str(number).strip() for number in numbers if str(number).strip()}
+
     # Цели: ЭТП = B2B, «Ссылка» пуста, номер есть.
     targets = []
     for r in range(2, last + 1):
@@ -171,8 +178,11 @@ def fill_b2b_links(xlsx_path, dry_run=False, say=print):
         if ws.cell(r, core.COL_LINK).value not in (None, ""):
             continue
         nums = core.numbers_in_cell(ws.cell(r, core.COL_NUMBER).value)
-        if nums:
-            targets.append((r, nums[0]))
+        if not nums:
+            continue
+        number = next((num for num in nums if wanted is None or num in wanted), None)
+        if number:
+            targets.append((r, number))
 
     say("Строк B2B без ссылки:", len(targets))
     if not targets:

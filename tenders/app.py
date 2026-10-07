@@ -16,11 +16,12 @@ import os
 import queue
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 from tkinter.scrolledtext import ScrolledText
 
 from . import core as at
 from . import b2b_links
+from . import b2b_details
 
 CHART_DAYS = 14      # сколько последних дней показывать на графике
 BAR_COLOR = "#4A90D9"
@@ -85,14 +86,22 @@ class TenderApp:
         self.btn_add = ttk.Button(btns, text="Добавить тендеры",
                                   command=lambda: self.run_sync(dry_run=False))
         self.btn_add.pack(side="left", padx=8)
-        # Чекбокс: автоматически проставлять ссылки B2B после добавления
+        # Чекбокс: ссылка, карточка и документы новых B2B после добавления.
         self.var_fetch_b2b = tk.BooleanVar(value=False)
-        self.chk_b2b = ttk.Checkbutton(btns, text="Ссылки B2B", variable=self.var_fetch_b2b)
+        self.chk_b2b = ttk.Checkbutton(
+            btns, text="B2B: ссылка, данные и файлы", variable=self.var_fetch_b2b)
         self.chk_b2b.pack(side="left", padx=8)
+
+        b2b_actions = ttk.Frame(self.tab_add, padding=(10, 0, 10, 4))
+        b2b_actions.pack(fill="x")
         # Отдельный режим: проставить ссылки B2B-Center по номеру тендера.
-        self.btn_b2b = ttk.Button(btns, text="Ссылки B2B (все)",
+        self.btn_b2b = ttk.Button(b2b_actions, text="Ссылки B2B (все)",
                                   command=self.run_b2b_links)
         self.btn_b2b.pack(side="left")
+        self.btn_b2b_details = ttk.Button(
+            b2b_actions, text="Данные и файлы B2B…",
+            command=self.run_b2b_details)
+        self.btn_b2b_details.pack(side="left", padx=8)
 
         file_row = ttk.Frame(self.tab_add, padding=(10, 0, 10, 4))
         file_row.pack(fill="x")
@@ -176,6 +185,42 @@ class TenderApp:
             import traceback
             self.msg_queue.put(("error", traceback.format_exc()))
 
+    def run_b2b_details(self):
+        """Точечно обновить закрытые данные и файлы указанных процедур."""
+        if self.worker is not None and self.worker.is_alive():
+            return
+        raw = simpledialog.askstring(
+            "Данные и файлы B2B",
+            "Введите один или несколько номеров процедур\n"
+            "(через пробел, запятую или с новой строки):",
+            parent=self.root)
+        if raw is None:
+            return
+        import re
+        numbers = list(dict.fromkeys(re.findall(r"\d+", raw)))
+        if not numbers:
+            messagebox.showwarning(
+                "Тендеры", "Не найдено ни одного номера процедуры.", parent=self.root)
+            return
+        self._clear_output()
+        self._set_busy(True, "Данные и файлы B2B...")
+        self.worker = threading.Thread(
+            target=self._worker_b2b_details, args=(numbers,))
+        self.worker.start()
+
+    def _worker_b2b_details(self, numbers):
+        def say(*parts):
+            self.msg_queue.put(("line", " ".join(str(p) for p in parts)))
+        try:
+            result = b2b_details.collect_b2b_details(
+                self.xlsx_path, numbers, dry_run=False, say=say)
+            self.msg_queue.put(("done", result))
+        except at.SyncError as ex:
+            self.msg_queue.put(("warn", str(ex)))
+        except Exception:
+            import traceback
+            self.msg_queue.put(("error", traceback.format_exc()))
+
     def _poll_queue(self):
         try:
             while True:
@@ -183,7 +228,17 @@ class TenderApp:
                 if kind == "line":
                     self._append(payload)
                 elif kind == "done":
-                    if "filled" in payload:          # итог режима «Ссылки B2B»
+                    if "processed" in payload:       # карточки и файлы B2B
+                        errors = len(payload.get("errors", []))
+                        self._set_busy(
+                            False, "Готово: B2B %d, файлов %d%s"
+                            % (len(payload.get("processed", [])),
+                               payload.get("files_extracted", 0),
+                               ", ошибок %d" % errors if errors else ""))
+                        if payload.get("stopped"):
+                            messagebox.showwarning(
+                                "B2B остановлено", payload["stopped"], parent=self.root)
+                    elif "filled" in payload:        # итог режима «Ссылки B2B»
                         self._set_busy(
                             False, "Готово: ссылок %d (не найдено %d, неоднозначно %d)"
                             % (payload.get("filled", 0), len(payload.get("not_found", [])),
@@ -214,6 +269,7 @@ class TenderApp:
         self.btn_preview.configure(state=state)
         self.btn_add.configure(state=state)
         self.btn_b2b.configure(state=state)
+        self.btn_b2b_details.configure(state=state)
         # Чекбокс B2B тоже отключаем во время работы
         try:
             self.chk_b2b.configure(state=state)

@@ -203,6 +203,30 @@ def test_fill_dry_run_does_not_change_file(workbook, monkeypatch):
     assert not (workbook.parent / "backups").exists()
 
 
+def test_fill_can_be_limited_to_exact_numbers(workbook, monkeypatch):
+    wb = openpyxl.load_workbook(workbook)
+    ws = wb[core.SHEET]
+    ws.cell(5, core.COL_CUSTOMER, "Заказчик 104")
+    ws.cell(5, core.COL_NUMBER, "104")
+    ws.cell(5, core.COL_ETP, "b2b-center")
+    wb.save(workbook)
+    looked_up = []
+
+    def lookup(_session, number):
+        looked_up.append(number)
+        return [{"id": number, "заголовок": "Тест",
+                 "url": b.BASE + "/market/test/tender-%s/" % number}]
+
+    monkeypatch.setattr(b, "lookup_tender", lookup)
+    result = b.fill_b2b_links(str(workbook), numbers=["104"], say=quiet)
+
+    ws = openpyxl.load_workbook(workbook)[core.SHEET]
+    assert looked_up == ["104"]
+    assert result["filled"] == 1
+    assert ws.cell(2, core.COL_LINK).value is None
+    assert ws.cell(5, core.COL_LINK).hyperlink.target.endswith("/tender-104/")
+
+
 def test_fill_records_network_error(workbook, monkeypatch):
     def fail(_session, _number):
         raise requests.ConnectionError("offline")

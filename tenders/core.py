@@ -53,7 +53,7 @@ from openpyxl.styles import PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.formula import ArrayFormula
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 # ------------------------- НАСТРОЙКИ -------------------------
 WORK_DIR  = r"C:\Работа\В работе"
@@ -576,8 +576,8 @@ def sync(xlsx_path, text, dry_run=False, fetch_b2b_links=False, say=print):
     Возвращает dict с итогами; ожидаемые проблемы поднимает как SyncError
     (текст готов для показа пользователю). say(*args) — вывод хода работы.
 
-    Если fetch_b2b_links=True, после сохранения автоматически проставит ссылки
-    на B2B-Center для новых тендеров с ЭТП = b2b-center и пустой «Ссылка».
+    Если fetch_b2b_links=True, после сохранения автоматически проставит ссылки,
+    соберёт карточки и скачает документы новых тендеров B2B-Center.
     """
     if not os.path.exists(xlsx_path):
         raise SyncError("Не найден файл " + xlsx_path)
@@ -809,17 +809,28 @@ def sync(xlsx_path, text, dry_run=False, fetch_b2b_links=False, say=print):
     say("Резервная копия:", backup)
     say("Готово. Файл сохранён:", xlsx_path)
 
-    # Автоматически проставить ссылки B2B-Center для новых тендеров
+    # Автоматически проставить ссылки и собрать данные только новых B2B-тендеров.
+    b2b_result = None
+    b2b_details_result = None
     if fetch_b2b_links and new_entries:
         from . import b2b_links
-        say("Поиск ссылок B2B-Center...")
-        try:
-            b2b_result = b2b_links.fill_b2b_links(xlsx_path, dry_run=False, say=say)
-            say("B2B: проставлено ссылок %d" % b2b_result.get("filled", 0))
-        except b2b_links.Antibot as ex:
-            say("B2B: остановлено антиботом — %s" % ex)
-        except Exception as ex:
-            say("B2B: ошибка — %s" % ex)
+        b2b_numbers = [entry["number"] for entry in new_entries
+                       if b2b_links.is_b2b(entry["etp"])]
+        if b2b_numbers:
+            say("Поиск ссылок B2B-Center...")
+            try:
+                b2b_result = b2b_links.fill_b2b_links(
+                    xlsx_path, dry_run=False, say=say, numbers=b2b_numbers)
+                say("B2B: проставлено ссылок %d" % b2b_result.get("filled", 0))
+                from . import b2b_details
+                b2b_details_result = b2b_details.collect_b2b_details(
+                    xlsx_path, b2b_numbers, dry_run=False, say=say)
+            except b2b_links.Antibot as ex:
+                say("B2B: остановлено антиботом — %s" % ex)
+            except Exception as ex:
+                # Excel, ссылка и папка уже сохранены. Ошибка закрытых данных не
+                # должна откатывать основное добавление тендера.
+                say("B2B: данные и документы не собраны — %s" % ex)
 
     log = ["[%s] %s" % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), xlsx_path),
            "добавлено: %d, уже было: %d" % (len(new_entries), existed)]
@@ -832,7 +843,8 @@ def sync(xlsx_path, text, dry_run=False, fetch_b2b_links=False, say=print):
     record_history(new_numbers, xlsx_path, say)
 
     return {"dry_run": False, "new": new_numbers, "existed": existed,
-            "created_folders": created_folders, "linked": linked, "backup": backup}
+            "created_folders": created_folders, "linked": linked, "backup": backup,
+            "b2b_links": b2b_result, "b2b_details": b2b_details_result}
 
 
 def main():
